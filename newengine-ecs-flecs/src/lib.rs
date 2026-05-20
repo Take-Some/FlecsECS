@@ -1,6 +1,6 @@
 #![forbid(unsafe_op_in_unsafe_fn)]
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::os::raw::{c_float, c_int};
 use std::ptr::NonNull;
 use std::sync::{Arc, Mutex};
@@ -25,6 +25,11 @@ use newengine_entity_api::{
     ENTITY_SERVICE_METHOD_EXISTS_JSON_V1, ENTITY_SERVICE_METHOD_INFO,
     ENTITY_SERVICE_METHOD_INVOKE, ENTITY_SERVICE_METHOD_LIST_JSON_V1,
     ENTITY_SERVICE_METHOD_SHUTDOWN_V1, ENTITY_SERVICE_METHOD_SPAWN_JSON_V1,
+};
+use newengine_assets::AssetServiceClient;
+use newengine_scene_io::{
+    method as scene_method, ENGINE_SCENE_SERVICE_ID, SCENE_BACKEND_CAPABILITY_ID,
+    SCENE_BACKEND_SERVICE_SPEC, SCENE_REQUIRED_METHODS, SCENE_SERVICE_ID,
 };
 use newengine_plugin_api::prelude::*;
 
@@ -104,6 +109,11 @@ impl FlecsEcsPlugin {
             1,
             r#"{"role":"entity-authority-bridge","contract":"entity.api","gateway":"engine.entity","backend":"flecs","shared_truth":"flecs-world"}"#,
         )
+        .provides_service(
+            SCENE_SERVICE_ID,
+            1,
+            r#"{"role":"scene-authority-bridge","contract":"scene.api","gateway":"engine.scene","backend":"flecs","shared_truth":"flecs-world"}"#,
+        )
         .push(CapabilityDesc::backend_route(
             ECS_BACKEND_CAPABILITY_ID,
             BackendRouteDescriptor::new(ECS_BACKEND_SERVICE_SPEC)
@@ -146,6 +156,27 @@ impl FlecsEcsPlugin {
                     "single-source-of-truth",
                 ]),
         ))
+        .push(CapabilityDesc::backend_route(
+            SCENE_BACKEND_CAPABILITY_ID,
+            BackendRouteDescriptor::new(SCENE_BACKEND_SERVICE_SPEC)
+                .backend(FLECS_BACKEND_ID)
+                .priority(500)
+                .features([
+                    "scene-load-save",
+                    "scene-authority",
+                    "semantic-component-packets",
+                    "shared-ecs-authority",
+                    "shared-entity-authority",
+                    "single-source-of-truth",
+                ])
+                .system_tags([
+                    "scene",
+                    "provider",
+                    "replaceable-backend",
+                    "plugin-override-proof",
+                    "single-source-of-truth",
+                ]),
+        ))
         .build()
     }
 
@@ -165,17 +196,28 @@ impl FlecsEcsPlugin {
         }
 
         let entity_service = ServiceV1_TO::from_value(
-            FlecsEntityService::new(backend, config.clone()),
+            FlecsEntityService::new(backend.clone(), config.clone()),
             TD_Opaque,
         );
         match (host.register_service_v1)(entity_service) {
+            RResult::ROk(()) => {}
+            RResult::RErr(e) => return RResult::RErr(e),
+        }
+
+        let scene_service = ServiceV1_TO::from_value(
+            FlecsSceneService::new(backend, host.clone(), config.clone()),
+            TD_Opaque,
+        );
+        match (host.register_service_v1)(scene_service) {
             RResult::ROk(()) => {
                 log::info!(
-                    "flecs ecs plugin: services registered ecs='{}' entity='{}' gateways='{},{}' backend='{}' priority=500 authority='shared-flecs-world'",
+                    "flecs ecs plugin: services registered ecs='{}' entity='{}' scene='{}' gateways='{},{},{}' backend='{}' priority=500 authority='shared-flecs-world'",
                     ECS_SERVICE_ID,
                     ENTITY_SERVICE_ID,
+                    SCENE_SERVICE_ID,
                     ENGINE_ECS_SERVICE_ID,
                     ENGINE_ENTITY_SERVICE_ID,
+                    ENGINE_SCENE_SERVICE_ID,
                     FLECS_BACKEND_ID,
                 );
                 self.enabled = true;
@@ -287,7 +329,19 @@ struct FlecsWorld {
     tick: u64,
     entities_changed_tick: u64,
     alive_entities: BTreeSet<u64>,
+    semantic_components: BTreeMap<u64, BTreeMap<String, serde_json::Value>>,
+    loaded_scene: Option<FlecsSceneState>,
     progress_on_advance_tick: bool,
+}
+
+#[derive(Clone, Debug, Default)]
+struct FlecsSceneState {
+    source_path: Option<String>,
+    schema: Option<String>,
+    version: Option<u64>,
+    title: Option<String>,
+    entity_count: usize,
+    entity_handles: Vec<EntityHandle>,
 }
 
 unsafe impl Send for FlecsWorld {}
@@ -310,6 +364,8 @@ impl FlecsWorld {
             tick: 0,
             entities_changed_tick: 0,
             alive_entities: BTreeSet::new(),
+            semantic_components: BTreeMap::new(),
+            loaded_scene: None,
             progress_on_advance_tick: config.progress_on_advance_tick,
         })
     }
@@ -319,10 +375,8 @@ impl FlecsWorld {
         EcsWorldSummary {
             tick: self.tick,
             entity_count: self.alive_entities.len() as u64,
-            // Flecs table/storage introspection is kept behind the provider until a
-            // provider-neutral component schema is added to newengine-ecs-api.
-            storage_count: 0,
-            resource_count: 0,
+            storage_count: self.unique_component_type_count() as u64,
+            resource_count: if self.loaded_scene.is_some() { 1 } else { 0 },
             entities_changed_tick: self.entities_changed_tick,
         }
     }
@@ -380,6 +434,42 @@ impl FlecsWorld {
                         message: "empty entity spawned in shared Flecs world".to_owned(),
                     });
                 }
+                EcsCommand::SetComponentJson { entity_id, component_type, payload } => {
+                    match self.set_component_json(entity_id, component_type.clone(), payload) {
+                        Ok(()) => results.push(EcsCommandResult {
+                            index,
+                            ok: true,
+                            entity_id: Some(entity_id),
+                            tick: self.tick,
+                            message: format!("semantic component packet '{}' set", component_type),
+                        }),
+                        Err(message) => results.push(EcsCommandResult {
+                            index,
+                            ok: false,
+                            entity_id: Some(entity_id),
+                            tick: self.tick,
+                            message,
+                        }),
+                    }
+                }
+                EcsCommand::RemoveComponentJson { entity_id, component_type } => {
+                    match self.remove_component_json(entity_id, component_type.clone()) {
+                        Ok(()) => results.push(EcsCommandResult {
+                            index,
+                            ok: true,
+                            entity_id: Some(entity_id),
+                            tick: self.tick,
+                            message: format!("semantic component packet '{}' removed", component_type),
+                        }),
+                        Err(message) => results.push(EcsCommandResult {
+                            index,
+                            ok: false,
+                            entity_id: Some(entity_id),
+                            tick: self.tick,
+                            message,
+                        }),
+                    }
+                }
             }
         }
         let summary = self.summary();
@@ -424,6 +514,7 @@ impl FlecsWorld {
             if exists {
                 unsafe { ecs_delete(self.raw.as_ptr(), handle.stable_id) };
                 self.alive_entities.remove(&handle.stable_id);
+                self.semantic_components.remove(&handle.stable_id);
                 self.entities_changed_tick = self.tick;
                 results.push(EntityDespawnResult {
                     entity: handle,
@@ -452,6 +543,140 @@ impl FlecsWorld {
         stable_id
     }
 
+    fn set_component_json(
+        &mut self,
+        entity_id: u64,
+        component_type: String,
+        payload: serde_json::Value,
+    ) -> Result<(), String> {
+        let component_type = component_type.trim().to_owned();
+        if component_type.is_empty() {
+            return Err("component_type must not be empty".to_owned());
+        }
+        self.prune_dead_entities();
+        if entity_id == 0 || !self.alive_entities.contains(&entity_id) {
+            return Err(format!("entity {entity_id} is not alive in shared Flecs world"));
+        }
+        self.semantic_components
+            .entry(entity_id)
+            .or_default()
+            .insert(component_type, payload);
+        self.entities_changed_tick = self.tick;
+        Ok(())
+    }
+
+    fn remove_component_json(&mut self, entity_id: u64, component_type: String) -> Result<(), String> {
+        let component_type = component_type.trim();
+        if component_type.is_empty() {
+            return Err("component_type must not be empty".to_owned());
+        }
+        self.prune_dead_entities();
+        if entity_id == 0 || !self.alive_entities.contains(&entity_id) {
+            return Err(format!("entity {entity_id} is not alive in shared Flecs world"));
+        }
+        if let Some(components) = self.semantic_components.get_mut(&entity_id) {
+            components.remove(component_type);
+            if components.is_empty() {
+                self.semantic_components.remove(&entity_id);
+            }
+        }
+        self.entities_changed_tick = self.tick;
+        Ok(())
+    }
+
+    fn unique_component_type_count(&self) -> usize {
+        let mut names = BTreeSet::new();
+        for components in self.semantic_components.values() {
+            names.extend(components.keys().cloned());
+        }
+        names.len()
+    }
+
+    fn load_scene_value(
+        &mut self,
+        scene_value: serde_json::Value,
+        source_path: Option<String>,
+        replace: bool,
+    ) -> FlecsSceneLoadResult {
+        if replace {
+            self.shutdown();
+        }
+
+        let normalized = normalize_scene_payload(scene_value);
+        let schema = normalized
+            .get("schema")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned);
+        let version = normalized.get("version").and_then(serde_json::Value::as_u64);
+        let title = normalized
+            .get("title")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned);
+        let records = extract_scene_entity_records(&normalized);
+
+        let mut entity_handles = Vec::with_capacity(records.len());
+        for (index, record) in records.into_iter().enumerate() {
+            let stable_id = self.spawn_empty();
+            let handle = EntityHandle::new(stable_id);
+            self.semantic_components
+                .entry(stable_id)
+                .or_default()
+                .insert("newengine.scene.entity".to_owned(), record);
+            self.semantic_components
+                .entry(stable_id)
+                .or_default()
+                .insert(
+                    "newengine.scene.source_index".to_owned(),
+                    serde_json::json!({ "index": index, "source_path": source_path.clone() }),
+                );
+            entity_handles.push(handle);
+        }
+
+        self.loaded_scene = Some(FlecsSceneState {
+            source_path: source_path.clone(),
+            schema: schema.clone(),
+            version,
+            title: title.clone(),
+            entity_count: entity_handles.len(),
+            entity_handles: entity_handles.clone(),
+        });
+
+        FlecsSceneLoadResult {
+            ok: true,
+            source_path,
+            replace,
+            schema,
+            version,
+            title,
+            entities: entity_handles,
+            total_count: self.summary().entity_count,
+        }
+    }
+
+    fn save_scene_value(&mut self) -> serde_json::Value {
+        self.prune_dead_entities();
+        let scene = self.loaded_scene.clone().unwrap_or_default();
+        let entities: Vec<serde_json::Value> = self
+            .alive_entities
+            .iter()
+            .copied()
+            .map(|stable_id| {
+                serde_json::json!({
+                    "handle": { "stable_id": stable_id },
+                    "components": self.semantic_components.get(&stable_id).cloned().unwrap_or_default()
+                })
+            })
+            .collect();
+        serde_json::json!({
+            "schema": scene.schema.unwrap_or_else(|| "newengine.scene.provider_snapshot.v1".to_owned()),
+            "version": scene.version.unwrap_or(1),
+            "title": scene.title,
+            "source_path": scene.source_path,
+            "authority": "shared-flecs-world",
+            "entities": entities
+        })
+    }
+
     fn shutdown(&mut self) {
         let existing = std::mem::take(&mut self.alive_entities);
         for entity in existing {
@@ -459,12 +684,16 @@ impl FlecsWorld {
         }
         self.tick = 0;
         self.entities_changed_tick = 0;
+        self.semantic_components.clear();
+        self.loaded_scene = None;
     }
 
     fn prune_dead_entities(&mut self) {
         let world = self.raw.as_ptr();
         self.alive_entities
             .retain(|entity| *entity != 0 && unsafe { ecs_is_alive(world, *entity) });
+        self.semantic_components
+            .retain(|entity, _| self.alive_entities.contains(entity));
     }
 }
 
@@ -496,6 +725,7 @@ impl FlecsEcsService {
                 "gateway-summary".to_owned(),
                 "entity-snapshot".to_owned(),
                 "command-envelope".to_owned(),
+                "semantic-component-packets".to_owned(),
                 "flecs-world".to_owned(),
                 "flecs-id-allocation".to_owned(),
                 "shared-entity-authority".to_owned(),
@@ -571,7 +801,7 @@ impl ServiceV1 for FlecsEcsService {
             "authority": {
                 "world": "shared-flecs-world",
                 "entity_truth": true,
-                "component_truth": "provider-local; typed schema pending",
+                "component_truth": "semantic-component-packets",
                 "paired_gateway": ENGINE_ENTITY_SERVICE_ID,
                 "paired_service": ENTITY_SERVICE_ID
             }
@@ -703,7 +933,7 @@ impl ServiceV1 for FlecsEntityService {
             "authority": {
                 "world": "shared-flecs-world",
                 "entity_truth": true,
-                "component_truth": "provider-local; typed schema pending",
+                "component_truth": "semantic-component-packets",
                 "paired_gateway": ENGINE_ECS_SERVICE_ID,
                 "paired_service": ECS_SERVICE_ID
             }
@@ -725,6 +955,215 @@ impl ServiceV1 for FlecsEntityService {
     }
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+struct FlecsSceneLoadResult {
+    ok: bool,
+    source_path: Option<String>,
+    replace: bool,
+    schema: Option<String>,
+    version: Option<u64>,
+    title: Option<String>,
+    entities: Vec<EntityHandle>,
+    total_count: u64,
+}
+
+#[derive(Clone)]
+struct FlecsSceneService {
+    backend: Arc<Mutex<FlecsWorld>>,
+    host: HostApiV1,
+    config: FlecsEcsPluginConfig,
+}
+
+impl FlecsSceneService {
+    fn new(backend: Arc<Mutex<FlecsWorld>>, host: HostApiV1, config: FlecsEcsPluginConfig) -> Self {
+        Self { backend, host, config }
+    }
+
+    fn with_backend<T>(&self, f: impl FnOnce(&mut FlecsWorld) -> T) -> T {
+        with_backend(&self.backend, f)
+    }
+
+    fn formats_json(&self) -> RResult<Blob, RString> {
+        ok_json(&serde_json::json!({
+            "id": SCENE_SERVICE_ID,
+            "gateway": ENGINE_SCENE_SERVICE_ID,
+            "origin": "first-party-plugin",
+            "owner": FLECS_ECS_PLUGIN_ID,
+            "backend": FLECS_BACKEND_ID,
+            "version": 1,
+            "formats": [
+                {
+                    "id": "newengine.scene.provider-neutral.v1",
+                    "schema": "json",
+                    "media_type": "application/json",
+                    "load": true,
+                    "save": true
+                }
+            ],
+            "authority": {
+                "world": "shared-flecs-world",
+                "scene_truth": true,
+                "entity_truth": true,
+                "component_truth": "semantic-component-packets"
+            },
+            "methods": SCENE_REQUIRED_METHODS
+        }))
+    }
+
+    fn load_json_v1(&self, payload: Blob) -> RResult<Blob, RString> {
+        let req = match decode_json_value(payload, scene_method::LOAD_JSON_V1) {
+            Ok(v) => v,
+            Err(e) => return RResult::RErr(e),
+        };
+        let replace = req.get("replace").and_then(serde_json::Value::as_bool).unwrap_or(true);
+        if !replace {
+            return RResult::RErr(RString::from("flecs scene service load_json_v1 supports replace=true only"));
+        }
+
+        let path = req
+            .get("path")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|it| !it.is_empty())
+            .map(str::to_owned);
+
+        let scene_value = if let Some(inline) = req.get("scene").or_else(|| req.get("payload")).or_else(|| req.get("asset")) {
+            inline.clone()
+        } else if let Some(path) = path.as_ref() {
+            let assets = AssetServiceClient::new(self.host.clone());
+            let bytes = match assets.text_v1(path) {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    return RResult::RErr(RString::from(format!(
+                        "flecs scene service cannot read scene asset path='{path}' err='{e}'"
+                    )));
+                }
+            };
+            match serde_json::from_slice::<serde_json::Value>(&bytes) {
+                Ok(value) => value,
+                Err(e) => {
+                    return RResult::RErr(RString::from(format!(
+                        "flecs scene service cannot parse scene asset path='{path}' err='{e}'"
+                    )));
+                }
+            }
+        } else {
+            return RResult::RErr(RString::from(
+                "flecs scene service load_json_v1 requires path, scene, payload or asset",
+            ));
+        };
+
+        let result = self.with_backend(|backend| backend.load_scene_value(scene_value, path, replace));
+        ok_json(&result)
+    }
+
+    fn save_json_v1(&self, payload: Blob) -> RResult<Blob, RString> {
+        let req = match decode_json_value(payload, scene_method::SAVE_JSON_V1) {
+            Ok(v) => v,
+            Err(e) => return RResult::RErr(e),
+        };
+        let path = req.get("path").and_then(serde_json::Value::as_str).unwrap_or("");
+        let pretty = req.get("pretty").and_then(serde_json::Value::as_bool).unwrap_or(true);
+        let payload = self.with_backend(|backend| backend.save_scene_value());
+        let payload_text = if pretty {
+            serde_json::to_string_pretty(&payload)
+        } else {
+            serde_json::to_string(&payload)
+        }
+        .unwrap_or_else(|_| "{}".to_owned());
+        ok_json(&serde_json::json!({
+            "ok": true,
+            "path": path,
+            "stored": false,
+            "storage": "caller-owned",
+            "authority": "shared-flecs-world",
+            "pretty": pretty,
+            "payload": payload,
+            "payload_text": payload_text
+        }))
+    }
+}
+
+impl ServiceV1 for FlecsSceneService {
+    fn id(&self) -> CapabilityId { CapabilityId::from(SCENE_SERVICE_ID) }
+
+    fn describe(&self) -> RString {
+        let value = serde_json::json!({
+            "id": SCENE_SERVICE_ID,
+            "gateway": ENGINE_SCENE_SERVICE_ID,
+            "version": 1,
+            "backend_id": FLECS_BACKEND_ID,
+            "backend_name": FLECS_ECS_PLUGIN_NAME,
+            "backend_version": FLECS_ECS_PLUGIN_VERSION,
+            "debug_text": self.config.debug_text,
+            "methods": SCENE_REQUIRED_METHODS,
+            "features": [
+                "scene-load-save",
+                "scene-authority",
+                "semantic-component-packets",
+                "single-source-of-truth"
+            ],
+            "authority": {
+                "world": "shared-flecs-world",
+                "scene_truth": true,
+                "entity_truth": true,
+                "component_truth": "semantic-component-packets",
+                "paired_gateway": ENGINE_ECS_SERVICE_ID,
+                "paired_entity_gateway": ENGINE_ENTITY_SERVICE_ID
+            }
+        });
+        RString::from(serde_json::to_string(&value).unwrap_or_else(|_| "{}".to_owned()))
+    }
+
+    fn call(&self, method: MethodName, payload: Blob) -> RResult<Blob, RString> {
+        match method.as_str() {
+            scene_method::FORMATS_JSON => self.formats_json(),
+            scene_method::LOAD_JSON_V1 => self.load_json_v1(payload),
+            scene_method::SAVE_JSON_V1 => self.save_json_v1(payload),
+            other => RResult::RErr(RString::from(format!("flecs scene service: unknown method '{other}'"))),
+        }
+    }
+}
+
+fn normalize_scene_payload(value: serde_json::Value) -> serde_json::Value {
+    if let Some(scene) = value.get("scene") {
+        scene.clone()
+    } else if let Some(payload) = value.get("payload") {
+        payload.clone()
+    } else {
+        value
+    }
+}
+
+fn extract_scene_entity_records(scene: &serde_json::Value) -> Vec<serde_json::Value> {
+    if let Some(entities) = scene.get("entities").and_then(serde_json::Value::as_array) {
+        return entities.clone();
+    }
+
+    let mut records = Vec::new();
+    for key in ["player", "terrain", "sky", "lighting", "foliage", "audio", "postfx"] {
+        if let Some(value) = scene.get(key) {
+            records.push(serde_json::json!({
+                "kind": format!("scene.{}", key),
+                "name": key,
+                "payload": value
+            }));
+        }
+    }
+
+    if let Some(prefabs) = scene.get("prefabs").and_then(serde_json::Value::as_array) {
+        for (index, prefab) in prefabs.iter().enumerate() {
+            records.push(serde_json::json!({
+                "kind": "scene.prefab",
+                "name": format!("prefab_{}", index),
+                "payload": prefab
+            }));
+        }
+    }
+
+    records
+}
+
 fn with_backend<T>(backend: &Arc<Mutex<FlecsWorld>>, f: impl FnOnce(&mut FlecsWorld) -> T) -> T {
     let mut guard = match backend.lock() {
         Ok(v) => v,
@@ -737,6 +1176,14 @@ fn ok_json<T: serde::Serialize>(value: &T) -> RResult<Blob, RString> {
     match serde_json::to_vec(value) {
         Ok(bytes) => RResult::ROk(Blob::from(bytes)),
         Err(e) => RResult::RErr(RString::from(e.to_string())),
+    }
+}
+
+fn decode_json_value(payload: Blob, method: &str) -> Result<serde_json::Value, RString> {
+    if payload.is_empty() {
+        Ok(serde_json::json!({}))
+    } else {
+        serde_json::from_slice(payload.as_slice()).map_err(|e| RString::from(format!("{method}: {e}")))
     }
 }
 
@@ -825,6 +1272,11 @@ mod tests {
                 && cap.role == CapabilityRole::Provides
                 && cap.kind == CapabilityKind::ServiceV1
         }));
+        assert!(descriptor.capabilities.iter().any(|cap| {
+            cap.id.as_str() == SCENE_SERVICE_ID
+                && cap.role == CapabilityRole::Provides
+                && cap.kind == CapabilityKind::ServiceV1
+        }));
 
         let ecs_backend = descriptor
             .capabilities
@@ -847,6 +1299,17 @@ mod tests {
         assert_eq!(entity_json["engine_gateway"], ENGINE_ENTITY_SERVICE_ID);
         assert_eq!(entity_json["contract"], ENTITY_SERVICE_ID);
         assert_eq!(entity_json["backend"], FLECS_BACKEND_ID);
+
+        let scene_backend = descriptor
+            .capabilities
+            .iter()
+            .find(|cap| cap.id.as_str() == SCENE_BACKEND_CAPABILITY_ID)
+            .expect("scene.backend capability");
+        let scene_json: serde_json::Value = serde_json::from_str(scene_backend.describe_json.as_str()).unwrap();
+        assert_eq!(scene_json["service_kind"], "scene");
+        assert_eq!(scene_json["engine_gateway"], ENGINE_SCENE_SERVICE_ID);
+        assert_eq!(scene_json["contract"], SCENE_SERVICE_ID);
+        assert_eq!(scene_json["backend"], FLECS_BACKEND_ID);
     }
 
     #[test]
@@ -869,6 +1332,28 @@ mod tests {
         let list: EntityListResponse = serde_json::from_slice(list_blob.as_slice()).unwrap();
         assert_eq!(list.total_count, 1);
         assert_eq!(list.entities.len(), 1);
+    }
+
+    #[test]
+    fn scene_load_creates_authoritative_flecs_entities() {
+        let backend = test_backend();
+        let ecs = FlecsEcsService::new(backend.clone(), FlecsEcsPluginConfig::default());
+
+        let scene_value = serde_json::json!({
+            "schema": "test.scene",
+            "version": 1,
+            "entities": [
+                { "name": "A", "transform": { "position": [0, 0, 0] } },
+                { "name": "B", "transform": { "position": [1, 0, 0] } }
+            ]
+        });
+        let load = with_backend(&backend, |world| world.load_scene_value(scene_value, None, true));
+        assert_eq!(load.entities.len(), 2);
+
+        let summary_blob = ecs.summary_json_v1().into_result().unwrap();
+        let summary: EcsWorldSummary = serde_json::from_slice(summary_blob.as_slice()).unwrap();
+        assert_eq!(summary.entity_count, 2);
+        assert!(summary.storage_count >= 1);
     }
 
     #[test]

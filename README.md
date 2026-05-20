@@ -1,10 +1,10 @@
-# FlecsECS provider plugin
+# FlecsECS authority plugin
 
 `FlecsECS` is a runtime provider for NewEngine's gateway/override model. It is
 not wired by special-case engine code: it declares backend capabilities and lets
 `ActiveGatewayRegistry` select it over engine-owned baselines.
 
-The plugin now owns one shared Flecs world and exposes it through two service
+The plugin owns one shared Flecs world and exposes it through three service
 contracts:
 
 ```text
@@ -19,11 +19,18 @@ consumer/tool/runtime
   -> ActiveGatewayRegistry
   -> entity.api owned by newengine.ecs.flecs
   -> same shared Flecs world
+
+consumer/tool/runtime
+  -> engine.scene
+  -> ActiveGatewayRegistry
+  -> scene.api owned by newengine.ecs.flecs
+  -> same shared Flecs world
 ```
 
-This makes the plugin a stronger replacement proof: `engine.ecs` summary/snapshot
-and `engine.entity` lifecycle/list/exists calls observe the same provider-owned
-truth instead of two separate worlds.
+This is the plugin-system proof, not an ECS-specific shortcut: one plugin can
+become the selected authority for multiple engine gateways by descriptor facts
+only. Built-in gateways remain baselines and become `shadowed` when the plugin
+wins.
 
 ## Boundary
 
@@ -33,15 +40,17 @@ NewEngine DTOs to a private Flecs world and returns stable opaque entity ids.
 Current authority scope:
 
 ```text
-entity identity/lifecycle truth : FlecsECS plugin
-ECS summary/snapshot truth      : FlecsECS plugin
-component schema truth          : provider-local until a typed component schema API exists
-scene/render/physics gameplay   : still consume their current typed runtime world until migrated
+scene load/save truth           : FlecsECS plugin via scene.api
+entity identity/lifecycle truth : FlecsECS plugin via entity.api
+ECS summary/snapshot truth      : FlecsECS plugin via ecs.api
+semantic component packets      : FlecsECS plugin via command_json_v1
+native World                    : typed component cache / hot-path staging
 ```
 
-The important invariant is that built-in `engine.ecs` and `engine.entity` routes
-should become `shadowed` when this first-party plugin is present. That confirms
-plugin override priority, not filename or hand-written branch logic.
+Scene bootstrap can declare its native staging cache to the provider through
+`engine.entity` spawn packets and `engine.ecs` semantic component packets. That
+makes `selected_player_authority` an opaque provider `EntityHandle`; native
+`EntityId` is only a cache key.
 
 ## Build
 
@@ -65,6 +74,7 @@ Provider services:
 ```text
 ecs.api
 entity.api
+scene.api
 ```
 
 Backend capabilities:
@@ -72,6 +82,7 @@ Backend capabilities:
 ```text
 ecs.backend
 entity.backend
+scene.backend
 ```
 
 Engine gateways:
@@ -79,6 +90,7 @@ Engine gateways:
 ```text
 engine.ecs
 engine.entity
+engine.scene
 ```
 
 Supported ECS methods:
@@ -104,14 +116,34 @@ despawn_json_v1
 shutdown_v1
 ```
 
+Supported scene methods:
+
+```text
+scene.formats_json
+scene.load_json_v1
+scene.save_json_v1
+```
+
 ## Expected diagnostics
 
-A healthy launch should show both routes active from `newengine.ecs.flecs` and
-both engine-owned baselines shadowed:
+A healthy launch should show all three authority routes active from
+`newengine.ecs.flecs` and all engine-owned baselines shadowed:
 
 ```text
 engine.ecs    active   first-party-plugin ecs.api    newengine.ecs.flecs ecs    ecs.backend
 engine.ecs    shadowed engine-owned       engine.ecs ...                  ecs    ecs.backend
 engine.entity active   first-party-plugin entity.api newengine.ecs.flecs entity entity.backend
 engine.entity shadowed engine-owned       engine.entity ...              entity entity.backend
+engine.scene  active   first-party-plugin scene.api  newengine.ecs.flecs scene  scene.backend
+engine.scene  shadowed engine-owned       engine.scene ...               scene  scene.backend
 ```
+
+Expected world authority mode after bootstrap:
+
+```text
+world authority: native scene cache declared ... selected_provider=Some(...)
+world authority: bootstrap ... mode='plugin-ecs-entity-authority'
+```
+
+`split-authority` should not appear while `engine.ecs`, `engine.entity` and
+`engine.scene` are all owned by `newengine.ecs.flecs`.

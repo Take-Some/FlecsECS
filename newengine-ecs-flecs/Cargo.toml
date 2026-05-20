@@ -1,14 +1,16 @@
 [package]
 name = "newengine-ecs-flecs"
-version = "0.1.0"
+version = "0.1.2"
 edition = "2021"
-description = "NewEngine Flecs-backed ecs.api/entity.api authority provider plugin"
+description = "NewEngine Flecs-backed ecs.api/entity.api/scene.api authority provider plugin"
 license = "Proprietary"
 
 [dependencies]
 newengine-plugin-api = { workspace = true }
 newengine-ecs-api = { workspace = true }
 newengine-entity-api = { workspace = true }
+newengine-scene-io = { workspace = true }
+newengine-assets = { workspace = true }
 abi_stable = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
