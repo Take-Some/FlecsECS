@@ -1082,6 +1082,10 @@ impl FlecsSceneService {
             "payload_text": payload_text
         }))
     }
+
+    fn shutdown_v1(&self) -> RResult<Blob, RString> {
+        RResult::ROk(Blob::from(Vec::new()))
+    }
 }
 
 impl ServiceV1 for FlecsSceneService {
@@ -1120,6 +1124,7 @@ impl ServiceV1 for FlecsSceneService {
             scene_method::FORMATS_JSON => self.formats_json(),
             scene_method::LOAD_JSON_V1 => self.load_json_v1(payload),
             scene_method::SAVE_JSON_V1 => self.save_json_v1(payload),
+            scene_method::SHUTDOWN_V1 => self.shutdown_v1(),
             other => RResult::RErr(RString::from(format!("flecs scene service: unknown method '{other}'"))),
         }
     }
