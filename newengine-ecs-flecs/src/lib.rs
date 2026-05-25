@@ -228,10 +228,10 @@ impl FlecsEcsPlugin {
     }
 }
 
-impl PluginModuleV3 for FlecsEcsPlugin {
-    fn descriptor_v3(&self) -> PluginDescriptor { Self::descriptor() }
+impl PluginModule for FlecsEcsPlugin {
+    fn descriptor(&self) -> PluginDescriptor { Self::descriptor() }
 
-    fn config_defaults_v1(&self) -> RResult<ConfigBlobV1, RString> {
+    fn config_defaults(&self) -> RResult<ConfigBlobV1, RString> {
         RResult::ROk(ConfigBlobV1 {
             content_type: "application/json".into(),
             bytes: DEFAULT_SETTINGS_JSON.as_bytes().to_vec().into(),
@@ -239,7 +239,7 @@ impl PluginModuleV3 for FlecsEcsPlugin {
         })
     }
 
-    fn config_apply_patches_v1(
+    fn config_apply_patches(
         &self,
         base: &ConfigBlobV1,
         patches: RVec<ConfigPatchV1>,
@@ -273,13 +273,13 @@ impl PluginModuleV3 for FlecsEcsPlugin {
         })
     }
 
-    fn config_supports_live_update_v1(&self) -> bool { false }
+    fn config_supports_live_update(&self) -> bool { false }
 
-    fn config_update_live_v1(&mut self, _effective: &ConfigBlobV1) -> RResult<RVec<ConfigDiagV1>, RString> {
+    fn config_update_live(&mut self, _effective: &ConfigBlobV1) -> RResult<RVec<ConfigDiagV1>, RString> {
         RResult::ROk(RVec::new())
     }
 
-    fn init_v3(&mut self, host: HostApiV1, effective: ConfigBlobV1) -> RResult<(), RString> {
+    fn init(&mut self, host: HostApiV1, effective: ConfigBlobV1) -> RResult<(), RString> {
         let config = match parse_backend_config_blob(&effective) {
             Ok(v) => v,
             Err(e) => return RResult::RErr(RString::from(e)),
@@ -294,35 +294,6 @@ impl PluginModuleV3 for FlecsEcsPlugin {
     fn shutdown(&mut self) { self.enabled = false; }
 }
 
-impl PluginModuleV2 for FlecsEcsPlugin {
-    fn descriptor(&self) -> PluginDescriptor { Self::descriptor() }
-    fn init(&mut self, _host: HostApiV1) -> RResult<(), RString> {
-        RResult::RErr(RString::from("FlecsECS requires PluginModuleV3::init_v3 with backend-owned config"))
-    }
-    fn start(&mut self) -> RResult<(), RString> { RResult::ROk(()) }
-    fn fixed_update(&mut self, _dt: f32) -> RResult<(), RString> { RResult::ROk(()) }
-    fn update(&mut self, _dt: f32) -> RResult<(), RString> { RResult::ROk(()) }
-    fn render(&mut self, _dt: f32) -> RResult<(), RString> { RResult::ROk(()) }
-    fn shutdown(&mut self) { self.enabled = false; }
-}
-
-impl PluginModule for FlecsEcsPlugin {
-    fn info(&self) -> PluginInfo {
-        PluginInfo {
-            id: RString::from(FLECS_ECS_PLUGIN_ID),
-            name: RString::from(FLECS_ECS_PLUGIN_NAME),
-            version: RString::from(FLECS_ECS_PLUGIN_VERSION),
-        }
-    }
-    fn init(&mut self, _host: HostApiV1) -> RResult<(), RString> {
-        RResult::RErr(RString::from("FlecsECS requires PluginModuleV3::init_v3 with backend-owned config"))
-    }
-    fn start(&mut self) -> RResult<(), RString> { RResult::ROk(()) }
-    fn fixed_update(&mut self, _dt: f32) -> RResult<(), RString> { RResult::ROk(()) }
-    fn update(&mut self, _dt: f32) -> RResult<(), RString> { RResult::ROk(()) }
-    fn render(&mut self, _dt: f32) -> RResult<(), RString> { RResult::ROk(()) }
-    fn shutdown(&mut self) { self.enabled = false; }
-}
 
 struct FlecsWorld {
     raw: NonNull<ecs_world_t>,
