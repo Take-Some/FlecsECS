@@ -627,6 +627,12 @@ impl FlecsWorld {
     fn save_scene_value(&mut self) -> serde_json::Value {
         self.prune_dead_entities();
         let scene = self.loaded_scene.clone().unwrap_or_default();
+        let loaded_entity_count = scene.entity_count;
+        let loaded_entity_handles: Vec<serde_json::Value> = scene
+            .entity_handles
+            .iter()
+            .map(|handle| serde_json::json!({ "stable_id": handle.stable_id }))
+            .collect();
         let entities: Vec<serde_json::Value> = self
             .alive_entities
             .iter()
@@ -644,6 +650,8 @@ impl FlecsWorld {
             "title": scene.title,
             "source_path": scene.source_path,
             "authority": "shared-flecs-world",
+            "loaded_entity_count": loaded_entity_count,
+            "loaded_entity_handles": loaded_entity_handles,
             "entities": entities
         })
     }
