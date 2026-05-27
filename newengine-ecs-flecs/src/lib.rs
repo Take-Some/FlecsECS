@@ -34,12 +34,15 @@ use newengine_scene_io::{
 use newengine_plugin_api::prelude::*;
 
 pub const FLECS_ECS_PLUGIN_ID: &str = "newengine.ecs.flecs";
-pub const FLECS_ECS_PLUGIN_NAME: &str = "NewEngine Flecs ECS Authority";
+pub const FLECS_ECS_PLUGIN_NAME: &str = "Constellation ECS Authority";
 pub const FLECS_ECS_PLUGIN_VERSION: &str = env!("CARGO_PKG_VERSION");
-pub const FLECS_BACKEND_ID: &str = "flecs";
+pub const FLECS_BACKEND_ID: &str = "constellation";
+const ECS_PROVIDER_GATEWAY_ID: &str = "engine.ecs.constellation";
+const ENTITY_PROVIDER_GATEWAY_ID: &str = "engine.entity.constellation";
+const SCENE_PROVIDER_GATEWAY_ID: &str = "engine.scene.constellation";
 
 const DEFAULT_SETTINGS_JSON: &str = r#"{
-  "debug_text": "NewEngine | Flecs ECS/entity authority backend",
+  "debug_text": "North Star | Constellation ECS/entity authority backend",
   "initial_entity_capacity": 4096,
   "minimal_world": true,
   "progress_on_advance_tick": true
@@ -78,7 +81,7 @@ struct FlecsEcsPluginConfig {
 impl Default for FlecsEcsPluginConfig {
     fn default() -> Self {
         Self {
-            debug_text: "NewEngine | Flecs ECS/entity authority backend".to_owned(),
+            debug_text: "North Star | Constellation ECS/entity authority backend".to_owned(),
             initial_entity_capacity: 4096,
             minimal_world: true,
             progress_on_advance_tick: true,
@@ -102,22 +105,24 @@ impl FlecsEcsPlugin {
         .provides_service(
             ECS_SERVICE_ID,
             1,
-            r#"{"role":"ecs-authority-bridge","contract":"ecs.api","gateway":"engine.ecs","backend":"flecs","shared_truth":"flecs-world"}"#,
+            r#"{"role":"ecs-authority-bridge","contract":"ecs.api","gateway":"engine.ecs.constellation","root_gateway":"engine.ecs","backend":"constellation","implementation":"flecs","shared_truth":"flecs-world"}"#,
         )
         .provides_service(
             ENTITY_SERVICE_ID,
             1,
-            r#"{"role":"entity-authority-bridge","contract":"entity.api","gateway":"engine.entity","backend":"flecs","shared_truth":"flecs-world"}"#,
+            r#"{"role":"entity-authority-bridge","contract":"entity.api","gateway":"engine.entity.constellation","root_gateway":"engine.entity","backend":"constellation","implementation":"flecs","shared_truth":"flecs-world"}"#,
         )
         .provides_service(
             SCENE_SERVICE_ID,
             1,
-            r#"{"role":"scene-authority-bridge","contract":"scene.api","gateway":"engine.scene","backend":"flecs","shared_truth":"flecs-world"}"#,
+            r#"{"role":"scene-authority-bridge","contract":"scene.api","gateway":"engine.scene.constellation","root_gateway":"engine.scene","backend":"constellation","implementation":"flecs","shared_truth":"flecs-world"}"#,
         )
         .push(CapabilityDesc::backend_route(
             ECS_BACKEND_CAPABILITY_ID,
             BackendRouteDescriptor::new(ECS_BACKEND_SERVICE_SPEC)
+                .provider_route(ECS_PROVIDER_GATEWAY_ID)
                 .backend(FLECS_BACKEND_ID)
+                .metadata_json("implementation", serde_json::json!("flecs"))
                 .priority(500)
                 .features([
                     "gateway-summary",
@@ -138,7 +143,9 @@ impl FlecsEcsPlugin {
         .push(CapabilityDesc::backend_route(
             ENTITY_BACKEND_CAPABILITY_ID,
             BackendRouteDescriptor::new(ENTITY_BACKEND_SERVICE_SPEC)
+                .provider_route(ENTITY_PROVIDER_GATEWAY_ID)
                 .backend(FLECS_BACKEND_ID)
+                .metadata_json("implementation", serde_json::json!("flecs"))
                 .priority(500)
                 .features([
                     "opaque-stable-handles",
@@ -159,7 +166,9 @@ impl FlecsEcsPlugin {
         .push(CapabilityDesc::backend_route(
             SCENE_BACKEND_CAPABILITY_ID,
             BackendRouteDescriptor::new(SCENE_BACKEND_SERVICE_SPEC)
+                .provider_route(SCENE_PROVIDER_GATEWAY_ID)
                 .backend(FLECS_BACKEND_ID)
+                .metadata_json("implementation", serde_json::json!("flecs"))
                 .priority(500)
                 .features([
                     "scene-load-save",
@@ -211,13 +220,13 @@ impl FlecsEcsPlugin {
         match (host.register_service_v1)(scene_service) {
             RResult::ROk(()) => {
                 log::info!(
-                    "flecs ecs plugin: services registered ecs='{}' entity='{}' scene='{}' gateways='{},{},{}' backend='{}' priority=500 authority='shared-flecs-world'",
+                    "flecs ecs plugin: services registered ecs='{}' entity='{}' scene='{}' routes='{},{},{}' backend='{}' priority=500 authority='shared-constellation-world'",
                     ECS_SERVICE_ID,
                     ENTITY_SERVICE_ID,
                     SCENE_SERVICE_ID,
-                    ENGINE_ECS_SERVICE_ID,
-                    ENGINE_ENTITY_SERVICE_ID,
-                    ENGINE_SCENE_SERVICE_ID,
+                    ECS_PROVIDER_GATEWAY_ID,
+                    ENTITY_PROVIDER_GATEWAY_ID,
+                    SCENE_PROVIDER_GATEWAY_ID,
                     FLECS_BACKEND_ID,
                 );
                 self.enabled = true;
@@ -1270,6 +1279,8 @@ mod tests {
         let ecs_json: serde_json::Value = serde_json::from_str(ecs_backend.describe_json.as_str()).unwrap();
         assert_eq!(ecs_json["service_kind"], "ecs");
         assert_eq!(ecs_json["engine_gateway"], ENGINE_ECS_SERVICE_ID);
+        assert_eq!(ecs_json["provider_route"], ECS_PROVIDER_GATEWAY_ID);
+        assert_eq!(ecs_json["system_tags"][0], "provider.implementation_route");
         assert_eq!(ecs_json["contract"], ECS_SERVICE_ID);
         assert_eq!(ecs_json["backend"], FLECS_BACKEND_ID);
 
@@ -1281,6 +1292,8 @@ mod tests {
         let entity_json: serde_json::Value = serde_json::from_str(entity_backend.describe_json.as_str()).unwrap();
         assert_eq!(entity_json["service_kind"], "entity");
         assert_eq!(entity_json["engine_gateway"], ENGINE_ENTITY_SERVICE_ID);
+        assert_eq!(entity_json["provider_route"], ENTITY_PROVIDER_GATEWAY_ID);
+        assert_eq!(entity_json["system_tags"][0], "provider.implementation_route");
         assert_eq!(entity_json["contract"], ENTITY_SERVICE_ID);
         assert_eq!(entity_json["backend"], FLECS_BACKEND_ID);
 
@@ -1292,6 +1305,8 @@ mod tests {
         let scene_json: serde_json::Value = serde_json::from_str(scene_backend.describe_json.as_str()).unwrap();
         assert_eq!(scene_json["service_kind"], "scene");
         assert_eq!(scene_json["engine_gateway"], ENGINE_SCENE_SERVICE_ID);
+        assert_eq!(scene_json["provider_route"], SCENE_PROVIDER_GATEWAY_ID);
+        assert_eq!(scene_json["system_tags"][0], "provider.implementation_route");
         assert_eq!(scene_json["contract"], SCENE_SERVICE_ID);
         assert_eq!(scene_json["backend"], FLECS_BACKEND_ID);
     }
