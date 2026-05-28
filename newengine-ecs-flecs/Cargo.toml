@@ -1,8 +1,8 @@
 [package]
-name = "newengine-ecs-flecs"
+name = "engine-ecs-constellation"
 version = "0.1.3"
 edition = "2021"
-description = "NewEngine Flecs-backed ecs.api/entity.api/scene.api authority provider plugin"
+description = "North Star engine.ecs provider route: Flecs ECS implementation"
 license = "Proprietary"
 
 [dependencies]
@@ -18,6 +18,11 @@ log = { workspace = true }
 
 [build-dependencies]
 cc = { workspace = true }
+
+[package.metadata.northstar.provider]
+route = "engine.ecs.constellation"
+install_name = "engine.ecs.constellation"
+implements = "engine.ecs"
 
 [lib]
 name = "flecs_ecs"

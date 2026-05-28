@@ -33,7 +33,7 @@ use newengine_scene_io::{
 };
 use newengine_plugin_api::prelude::*;
 
-pub const FLECS_ECS_PLUGIN_ID: &str = "newengine.ecs.flecs";
+pub const FLECS_ECS_PLUGIN_ID: &str = "engine.ecs.constellation";
 pub const FLECS_ECS_PLUGIN_NAME: &str = "Constellation ECS Authority";
 pub const FLECS_ECS_PLUGIN_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const FLECS_BACKEND_ID: &str = "constellation";

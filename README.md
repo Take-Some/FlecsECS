@@ -2,7 +2,7 @@
 
 `FlecsECS` is a runtime provider for NewEngine's gateway/override model. It is
 not wired by special-case engine code: it declares backend capabilities and lets
-`ActiveGatewayRegistry` select it over engine-owned baselines.
+`ActiveGatewayRegistry` select it over engine-runtime baselines.
 
 The plugin owns one shared Flecs world and exposes it through three service
 contracts:
@@ -127,15 +127,15 @@ scene.save_json_v1
 ## Expected diagnostics
 
 A healthy launch should show all three authority routes active from
-`newengine.ecs.flecs` and all engine-owned baselines shadowed:
+`newengine.ecs.flecs` and all engine-runtime baselines shadowed:
 
 ```text
 engine.ecs    active   first-party-plugin ecs.api    newengine.ecs.flecs ecs    ecs.backend
-engine.ecs    shadowed engine-owned       engine.ecs ...                  ecs    ecs.backend
+engine.ecs    shadowed engine-runtime       engine.ecs ...                  ecs    ecs.backend
 engine.entity active   first-party-plugin entity.api newengine.ecs.flecs entity entity.backend
-engine.entity shadowed engine-owned       engine.entity ...              entity entity.backend
+engine.entity shadowed engine-runtime       engine.entity ...              entity entity.backend
 engine.scene  active   first-party-plugin scene.api  newengine.ecs.flecs scene  scene.backend
-engine.scene  shadowed engine-owned       engine.scene ...               scene  scene.backend
+engine.scene  shadowed engine-runtime       engine.scene ...               scene  scene.backend
 ```
 
 Expected world authority mode after bootstrap:
