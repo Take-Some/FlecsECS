@@ -10,7 +10,7 @@ newengine-plugin-api = { workspace = true }
 newengine-ecs-api = { workspace = true }
 newengine-entity-api = { workspace = true }
 newengine-scene-io = { workspace = true }
-newengine-assets = { workspace = true }
+newengine-assets-api = { workspace = true }
 abi_stable = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -21,7 +21,7 @@ cc = { workspace = true }
 
 [package.metadata.northstar.provider]
 route = "engine.ecs.constellation"
-install_name = "engine.ecs.constellation"
+install_name = "constellation-ecs"
 implements = "engine.ecs"
 
 [lib]

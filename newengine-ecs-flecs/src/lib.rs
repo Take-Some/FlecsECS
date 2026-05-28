@@ -26,7 +26,7 @@ use newengine_entity_api::{
     ENTITY_SERVICE_METHOD_INVOKE, ENTITY_SERVICE_METHOD_LIST_JSON_V1,
     ENTITY_SERVICE_METHOD_SHUTDOWN_V1, ENTITY_SERVICE_METHOD_SPAWN_JSON_V1,
 };
-use newengine_assets::AssetServiceClient;
+use newengine_assets_api::AssetServiceClient;
 use newengine_scene_io::{
     method as scene_method, ENGINE_SCENE_SERVICE_ID, SCENE_BACKEND_CAPABILITY_ID,
     SCENE_BACKEND_SERVICE_SPEC, SCENE_REQUIRED_METHODS, SCENE_SERVICE_ID,

@@ -12,7 +12,7 @@ newengine-plugin-api = { package = "newengine-plugin-kit", path = "../../NewEngi
 newengine-ecs-api = { path = "../../NewEngine/neocore2/crates/newengine-ecs-api" }
 newengine-entity-api = { path = "../../NewEngine/neocore2/crates/newengine-entity-api" }
 newengine-scene-io = { path = "../../NewEngine/neocore2/crates/newengine-scene-io" }
-newengine-assets = { path = "../../NewEngine/neocore2/crates/newengine-assets" }
+newengine-assets-api = { path = "../../NewEngine/neocore2/crates/newengine-assets-api" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 log = "0.4"
