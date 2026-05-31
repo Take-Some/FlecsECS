@@ -259,6 +259,7 @@ dependencies = [
 name = "newengine-ecs-api"
 version = "0.1.0"
 dependencies = [
+ "newengine-entity-api",
  "newengine-service-api",
  "serde",
  "serde_json",

@@ -371,7 +371,7 @@ impl FlecsWorld {
                     truncated = true;
                     break;
                 }
-                entities.push(newengine_ecs_api::EcsEntitySnapshot { stable_id });
+                entities.push(newengine_ecs_api::EcsEntitySnapshot { handle: EntityHandle::new(stable_id) });
             }
         }
         EcsWorldSnapshot { summary, entities, truncated }
@@ -465,7 +465,7 @@ impl FlecsWorld {
                 truncated = true;
                 break;
             }
-            entities.push(EntityRecord { handle: EntityHandle::new(stable_id) });
+            entities.push(EntityRecord::alive(EntityHandle::new(stable_id)));
         }
         EntityListResponse { entities, truncated, total_count: self.alive_entities.len() as u64 }
     }
@@ -480,7 +480,7 @@ impl FlecsWorld {
         let mut entities = Vec::with_capacity(count);
         for _ in 0..count {
             let stable_id = self.spawn_empty();
-            entities.push(EntityRecord { handle: EntityHandle::new(stable_id) });
+            entities.push(EntityRecord::alive(EntityHandle::new(stable_id)));
         }
         let total_count = self.summary().entity_count;
         EntitySpawnResponse { entities, tick: self.tick, total_count }
