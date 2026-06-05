@@ -1,4 +1,13 @@
+mod northstar_plugin_build {
+    include!("../../build_support/plugin_cdylib_build.rs");
+}
+
 fn main() {
+    northstar_plugin_build::run();
+    build_flecs_c();
+}
+
+fn build_flecs_c() {
     let flecs_c = "third_party/flecs/distr/flecs.c";
     let flecs_h = "third_party/flecs/distr/flecs.h";
 
