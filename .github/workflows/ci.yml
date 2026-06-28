@@ -1,0 +1,104 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  NEWENGINE_REPOSITORY: Take-Some/NewEngine
+  NEWENGINE_REF: main
+  PLUGIN_NAME: FlecsECS
+
+jobs:
+  rust-windows:
+    name: Rust / Windows
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout plugin
+        uses: actions/checkout@v4
+        with:
+          path: NorthStar/Plugins/${{ env.PLUGIN_NAME }}
+
+      - name: Require NewEngine checkout token
+        shell: pwsh
+        env:
+          NORTHSTAR_CI_TOKEN: ${{ secrets.NORTHSTAR_CI_TOKEN }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:NORTHSTAR_CI_TOKEN)) {
+            $message = @"
+          NORTHSTAR_CI_TOKEN is required because this workflow checks out the private cross-repository dependency '$env:NEWENGINE_REPOSITORY'.
+
+          Create a fine-grained PAT or GitHub App token with Contents: Read access to '$env:NEWENGINE_REPOSITORY', then add it as repository secret NORTHSTAR_CI_TOKEN in this plugin repository.
+          "@
+            Write-Error $message
+          }
+
+      - name: Checkout NewEngine API dependency
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.NEWENGINE_REPOSITORY }}
+          ref: ${{ env.NEWENGINE_REF }}
+          path: NorthStar/NewEngine
+          token: ${{ secrets.NORTHSTAR_CI_TOKEN }}
+          persist-credentials: false
+
+      - name: Setup Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: NorthStar/Plugins/${{ env.PLUGIN_NAME }} -> target
+
+      - name: Verify North Star workspace layout
+        shell: pwsh
+        run: |
+          $required = @(
+            "NorthStar/NewEngine/neocore2/crates/newengine-plugin-kit/Cargo.toml",
+            "NorthStar/Plugins/$env:PLUGIN_NAME/Cargo.toml",
+            "NorthStar/Plugins/$env:PLUGIN_NAME/Cargo.lock"
+          )
+
+          foreach ($path in $required) {
+            if (-not (Test-Path $path)) {
+              Write-Error "Required path is missing: $path"
+            }
+          }
+
+      - name: Cargo check
+        working-directory: NorthStar/Plugins/${{ env.PLUGIN_NAME }}
+        run: cargo check --workspace --all-targets --locked
+
+      - name: Cargo test
+        working-directory: NorthStar/Plugins/${{ env.PLUGIN_NAME }}
+        run: cargo test --workspace --all-targets --locked
+
+      - name: Cargo clippy
+        working-directory: NorthStar/Plugins/${{ env.PLUGIN_NAME }}
+        run: cargo clippy --workspace --all-targets --locked --no-deps -- -D warnings
+
+      - name: Cargo release build
+        working-directory: NorthStar/Plugins/${{ env.PLUGIN_NAME }}
+        run: cargo build --workspace --locked --profile release
+
+      - name: Upload release DLLs
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.PLUGIN_NAME }}-windows-release
+          path: NorthStar/Plugins/${{ env.PLUGIN_NAME }}/target/release/*.dll
+          if-no-files-found: warn
