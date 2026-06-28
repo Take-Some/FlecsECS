@@ -1230,6 +1230,13 @@ fn merge_json_replace(dst: &mut serde_json::Value, src: &serde_json::Value) {
     }
 }
 
+/// Returns the ABI-level plugin signature consumed by the NewEngine plugin loader.
+///
+/// # Safety
+///
+/// This function is exported for host-side dynamic loading. Callers must ensure the
+/// loaded library and host agree on the `newengine-plugin-api` ABI version and that
+/// the returned `PluginSignatureV1` is consumed according to that ABI contract.
 #[no_mangle]
 pub unsafe extern "C" fn newengine_plugin_signature_v1() -> PluginSignatureV1 {
     PluginSignatureV1 {
