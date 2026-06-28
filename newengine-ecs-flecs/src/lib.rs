@@ -45,7 +45,7 @@ const DEFAULT_SETTINGS_JSON: &str = r#"{
   "debug_text": "North Star | Constellation ECS/entity authority backend",
   "initial_entity_capacity": 4096,
   "minimal_world": true,
-  "progress_on_advance_tick": true
+  "progress_on_advance_tick": false
 }"#;
 
 const ENTITY_SPAWN_HARD_LIMIT: usize = 65_536;
@@ -84,7 +84,7 @@ impl Default for FlecsEcsPluginConfig {
             debug_text: "North Star | Constellation ECS/entity authority backend".to_owned(),
             initial_entity_capacity: 4096,
             minimal_world: true,
-            progress_on_advance_tick: true,
+            progress_on_advance_tick: false,
         }
     }
 }
